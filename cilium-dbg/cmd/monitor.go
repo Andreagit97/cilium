@@ -53,7 +53,7 @@ programs attached to endpoints and devices. This includes:
 		},
 	}
 	linkCache  = link.NewLinkCache()
-	printer    = format.NewMonitorFormatter(format.INFO, linkCache)
+	printer    = format.NewMonitorFormatter(format.INFO, linkCache, os.Stdout)
 	socketPath = ""
 	verbosity  = []bool{}
 )
@@ -146,7 +146,6 @@ func consumeMonitorEvents(ctx context.Context, conn net.Conn, version listener.V
 				logfields.Error, err,
 				logfields.Type, pl.Type,
 			)
-			format.LostEvent(pl.Lost, pl.CPU)
 		}
 	}
 }

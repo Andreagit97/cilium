@@ -6,9 +6,9 @@ package monitor
 import (
 	"bufio"
 	"fmt"
-	"os"
 
 	"github.com/cilium/cilium/pkg/byteorder"
+	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/policy"
@@ -64,10 +64,18 @@ type PolicyVerdictNotify struct {
 
 // DecodePolicyVerdictNotify will decode 'data' into the provided PolicyVerdictNotify structure
 func DecodePolicyVerdictNotify(data []byte, pvn *PolicyVerdictNotify) error {
-	return pvn.decodePolicyVerdictNotify(data)
+	return pvn.Decode(data)
 }
 
-func (n *PolicyVerdictNotify) decodePolicyVerdictNotify(data []byte) error {
+func (n *PolicyVerdictNotify) GetSrc() uint16 {
+	return n.Source
+}
+
+func (n *PolicyVerdictNotify) GetDst() uint16 {
+	return uint16(n.RemoteLabel)
+}
+
+func (n *PolicyVerdictNotify) Decode(data []byte) error {
 	if l := len(data); l < PolicyVerdictNotifyLen {
 		return fmt.Errorf("unexpected PolicyVerdictNotify data length, expected %d but got %d", PolicyVerdictNotifyLen, l)
 	}
@@ -134,8 +142,7 @@ func (n *PolicyVerdictNotify) GetAuthType() policy.AuthType {
 }
 
 // DumpInfo prints a summary of the policy notify messages.
-func (n *PolicyVerdictNotify) DumpInfo(data []byte, numeric DisplayFormat) {
-	buf := bufio.NewWriter(os.Stdout)
+func (n *PolicyVerdictNotify) DumpInfo(buf *bufio.Writer, data []byte, numeric bool, _ getters.LinkGetter) {
 	dir := "egress"
 	if n.IsTrafficIngress() {
 		dir = "ingress"
@@ -150,5 +157,16 @@ func (n *PolicyVerdictNotify) DumpInfo(data []byte, numeric DisplayFormat) {
 		GetPolicyActionString(n.Verdict, n.IsTrafficAudited()),
 		n.GetAuthType(), n.GetPolicyMatchType(),
 		GetConnectionSummary(data[PolicyVerdictNotifyLen:], nil))
-	buf.Flush()
+}
+
+func (n *PolicyVerdictNotify) DumpJSON(buf *bufio.Writer, data []byte, _ int, linkMonitor getters.LinkGetter) {
+	// We don't have a JSON representation for PolicyVerdictNotify yet.
+	// We use DumpInfo but probably it would be better to put in place a proper JSON representation
+	// Note we use `false` for numeric since we don't have the argument here.
+	n.DumpInfo(buf, data, false, linkMonitor)
+}
+
+func (n *PolicyVerdictNotify) DumpVerbose(buf *bufio.Writer, data []byte, _ int, numeric bool, linkMonitor getters.LinkGetter, _ bool) {
+	// We don't have a different verbose format so we just use the Info format
+	n.DumpInfo(buf, data, numeric, linkMonitor)
 }

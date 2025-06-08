@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"os"
 
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/types"
@@ -39,6 +38,9 @@ const (
 // Keep this in sync to the datapath structure (trace_sock_notify) defined in
 // bpf/lib/trace_sock.h
 type TraceSockNotify struct {
+	DefaultSrcDstGetter
+	DefaultDump
+
 	Type       uint8
 	XlatePoint uint8
 	DstIP      types.IPv6
@@ -49,12 +51,13 @@ type TraceSockNotify struct {
 	Flags      uint8
 }
 
+// todo!: remove this
 // DecodeTraceSockNotify will decode 'data' into the provided TraceSocNotify structure
 func DecodeTraceSockNotify(data []byte, sock *TraceSockNotify) error {
-	return sock.decodeTraceSockNotify(data)
+	return sock.Decode(data)
 }
 
-func (t *TraceSockNotify) decodeTraceSockNotify(data []byte) error {
+func (t *TraceSockNotify) Decode(data []byte) error {
 	if l := len(data); l < TraceSockNotifyLen {
 		return fmt.Errorf("unexpected TraceSockNotify data length, expected %d but got %d", TraceSockNotifyLen, l)
 	}
@@ -71,12 +74,9 @@ func (t *TraceSockNotify) decodeTraceSockNotify(data []byte) error {
 	return nil
 }
 
-func (t *TraceSockNotify) DumpDebug(prefix string) {
-	buf := bufio.NewWriter(os.Stdout)
-
-	fmt.Fprintf(buf, "%s [%s] cgroup_id: %d sock_cookie: %d, dst [%s]:%d %s \n",
-		prefix, t.XlatePointStr(), t.CgroupId, t.SockCookie, t.IP(), t.DstPort, t.L4ProtoStr())
-	buf.Flush()
+func (t *TraceSockNotify) DumpDebug(buf *bufio.Writer, cpu int) {
+	fmt.Fprintf(buf, "CPU %02d [%s] cgroup_id: %d sock_cookie: %d, dst [%s]:%d %s \n",
+		cpu, t.XlatePointStr(), t.CgroupId, t.SockCookie, t.IP(), t.DstPort, t.L4ProtoStr())
 }
 
 func (t *TraceSockNotify) XlatePointStr() string {

@@ -35,9 +35,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath/link"
-	"github.com/cilium/cilium/pkg/monitor"
+	"github.com/cilium/cilium/pkg/monitor/format"
 )
 
 var (
@@ -51,6 +50,15 @@ var (
 
 	dumpCtx = flag.Bool("dump-ctx", false, "If set, the program context will be dumped after a CHECK and SETUP run.")
 )
+
+type testLogWriter struct {
+	t *testing.T
+}
+
+func (w *testLogWriter) Write(p []byte) (n int, err error) {
+	w.t.Logf("%s", string(p))
+	return len(p), nil
+}
 
 func TestBPF(t *testing.T) {
 	if testPath == nil || *testPath == "" {
@@ -212,23 +220,14 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 			t.Fatalf("new global log reader: %s", err.Error())
 		}
 		defer globalLogReader.Close()
-
-		linkCache := link.NewLinkCache()
-
+		formatter := format.NewMonitorFormatter(format.INFO, link.NewLinkCache(), &testLogWriter{t: t})
 		go func() {
 			for {
 				rec, err := globalLogReader.Read()
 				if err != nil {
 					return
 				}
-
-				dm := monitor.DebugMsg{}
-				reader := bytes.NewReader(rec.RawSample)
-				if err := binary.Read(reader, byteorder.Native, &dm); err != nil {
-					return
-				}
-
-				t.Log(dm.Message(linkCache))
+				formatter.FormatSample(rec.RawSample, rec.CPU)
 			}
 		}()
 	}

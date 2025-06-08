@@ -4,6 +4,9 @@
 package api
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -13,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 	"github.com/cilium/cilium/pkg/monitor/notifications"
 )
 
@@ -193,6 +197,20 @@ type AgentNotify struct {
 	Text string
 }
 
+func (a *AgentNotify) Decode(data []byte) error {
+	buf := bytes.NewBuffer(data[1:])
+	dec := gob.NewDecoder(buf)
+	return dec.Decode(a)
+}
+
+func (a *AgentNotify) GetSrc() uint16 {
+	return 0
+}
+
+func (a *AgentNotify) GetDst() uint16 {
+	return 0
+}
+
 // AgentNotifyMessage is a notification from the agent. It is similar to
 // AgentNotify, but the notification is an unencoded struct. See the *Message
 // constructors in this package for possible values.
@@ -254,8 +272,8 @@ func resolveAgentType(t AgentNotification) string {
 }
 
 // DumpInfo dumps an agent notification
-func (n *AgentNotify) DumpInfo() {
-	fmt.Printf(">> %s: %s\n", resolveAgentType(n.Type), n.Text)
+func (n *AgentNotify) DumpInfo(buf *bufio.Writer, _ []byte, _ bool, _ getters.LinkGetter) {
+	fmt.Fprintf(buf, ">> %s: %s\n", resolveAgentType(n.Type), n.Text)
 }
 
 func (n *AgentNotify) getJSON() string {
@@ -263,8 +281,13 @@ func (n *AgentNotify) getJSON() string {
 }
 
 // DumpJSON prints notification in json format
-func (n *AgentNotify) DumpJSON() {
-	fmt.Println(n.getJSON())
+func (n *AgentNotify) DumpJSON(buf *bufio.Writer, _ []byte, _ int, _ getters.LinkGetter) {
+	fmt.Fprintln(buf, n.getJSON())
+}
+
+func (n *AgentNotify) DumpVerbose(buf *bufio.Writer, data []byte, _ int, numeric bool, linkMonitor getters.LinkGetter, _ bool) {
+	// We don't have a different verbose format so we just use the Info format
+	n.DumpInfo(buf, data, numeric, linkMonitor)
 }
 
 // PolicyUpdateNotification structures update notification
