@@ -69,12 +69,12 @@ func (tn *TraceNotify) Dump(args *api.DumpArgs) {
 	}
 }
 
-// GetSrc retrieves the sorce endpoint for the message.
+// GetSrc retrieves the source endpoint for the message.
 func (tn *TraceNotify) GetSrc() uint16 {
 	return tn.Source
 }
 
-// GetDst retrieves the destination endpoint for the message.
+// GetDst retrieves the destination endpoint or proxy destination port according to the message subtype.
 func (tn *TraceNotify) GetDst() uint16 {
 	return tn.DstID
 }

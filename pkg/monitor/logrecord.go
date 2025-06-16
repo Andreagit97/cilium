@@ -31,7 +31,7 @@ func (l *LogRecordNotify) Dump(args *api.DumpArgs) {
 	}
 }
 
-// GetSrc retrieves the sorce endpoint for the message
+// GetSrc retrieves the source endpoint for the message
 func (l *LogRecordNotify) GetSrc() uint16 {
 	return uint16(l.SourceEndpoint.ID)
 }

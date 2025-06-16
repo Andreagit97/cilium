@@ -66,12 +66,14 @@ func (pn *PolicyVerdictNotify) Dump(args *api.DumpArgs) {
 	pn.DumpInfo(args.Buf, args.Data, args.Format)
 }
 
-// GetSrc retrieves the sorce endpoint for the message.
+// GetSrc retrieves the source endpoint for the message.
 func (n *PolicyVerdictNotify) GetSrc() uint16 {
 	return n.Source
 }
 
-// GetDst retrieves the destination endpoint for the message.
+// GetDst retrieves the security identity for the message.
+// `POLICY_INGRESS` -> `RemoteLabel` is the src security identity.
+// `POLICY_EGRESS` -> `RemoteLabel` is the dst security identity.
 func (n *PolicyVerdictNotify) GetDst() uint16 {
 	return uint16(n.RemoteLabel)
 }

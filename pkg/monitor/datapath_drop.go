@@ -75,7 +75,7 @@ func (dn *DropNotify) Dump(args *api.DumpArgs) {
 	}
 }
 
-// GetSrc retrieves the sorce endpoint for the message.
+// GetSrc retrieves the source endpoint for the message.
 func (n *DropNotify) GetSrc() uint16 {
 	return n.Source
 }

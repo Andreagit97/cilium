@@ -54,7 +54,7 @@ type DumpArgs struct {
 type MonitorEvent interface {
 	// Decode decodes the message in 'data' into the struct.
 	Decode(data []byte) error
-	// GetSrc retrieves the sorce endpoint for the message
+	// GetSrc retrieves the source endpoint for the message
 	GetSrc() (src uint16)
 	// GetDst retrieves the destination endpoint for the message.
 	GetDst() (dst uint16)
@@ -73,7 +73,7 @@ func (d *DefaultDecoder) Decode(data []byte) error {
 // DefaultSrcDstGetter is a default implementation of the GetSrc and GetDst methods
 type DefaultSrcDstGetter struct{}
 
-// GetSrc retrieves the sorce endpoint for the message
+// GetSrc retrieves the source endpoint for the message
 func (d *DefaultSrcDstGetter) GetSrc() (src uint16) {
 	return 0
 }
