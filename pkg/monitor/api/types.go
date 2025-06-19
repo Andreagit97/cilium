@@ -191,7 +191,6 @@ func TraceObservationPoint(obsPoint uint8) string {
 // AgentNotify is a notification from the agent. The notification is stored
 // in its JSON-encoded representation
 type AgentNotify struct {
-	DefaultSrcDstGetter
 	Type AgentNotification
 	Text string
 }
@@ -201,15 +200,6 @@ func (a *AgentNotify) Decode(data []byte) error {
 	buf := bytes.NewBuffer(data[1:])
 	dec := gob.NewDecoder(buf)
 	return dec.Decode(a)
-}
-
-// Dump prints the message according to the verbosity level specified
-func (n *AgentNotify) Dump(args *DumpArgs) {
-	if args.Verbosity == JSON {
-		fmt.Fprintln(args.Buf, n.getJSON())
-	} else {
-		fmt.Fprintf(args.Buf, ">> %s: %s\n", resolveAgentType(n.Type), n.Text)
-	}
 }
 
 // AgentNotifyMessage is a notification from the agent. It is similar to
