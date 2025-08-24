@@ -1,0 +1,44 @@
+NAMESPACE := default
+
+# We want a static pod because in this way it can start also without a CNI.
+.PHONY: minikube-start
+minikube-start:
+	minikube start --network-plugin=cni --cni=false --driver=kvm2 --cpus=6 --memory=12g --disk-size='30g'
+	minikube cp  /home/andrea/personal/cilium/minikube/loader-agent.yaml minikube:/etc/kubernetes/manifests/loader-agent.yaml
+	kubectl wait --for=condition=Ready pod -l app=loader-agent-static --timeout=60s
+
+.PHONY: minikube-copy-binaries
+minikube-copy-binaries: build-cli build-cni build-agent build-hubble-cli build-bugtool
+	$(eval dst:=/cilium-binaries)
+	@echo "🔄 Updating binaries inside pods..."
+	for loader_pod in $$(kubectl get pods -n ${NAMESPACE} -l app=loader-agent-static -o custom-columns=:metadata.name --no-headers); do \
+		echo "=> Considering pod: $${loader_pod}"; \
+		echo "  [1/6] Copying ebpf folder..."; \
+		kubectl exec -n ${NAMESPACE} $${loader_pod} -- rm -rf "${dst}/var/lib/cilium"; \
+		kubectl exec -n ${NAMESPACE} $${loader_pod} -- mkdir -p "${dst}/var/lib/cilium"; \
+		kubectl cp "./bpf/" ${NAMESPACE}/$${loader_pod}:"${dst}/var/lib/cilium/bpf"; \
+		kubectl exec -n ${NAMESPACE} $${loader_pod} -- find ${dst}/var/lib/cilium/bpf -type f -exec chmod 0644 {} +; \
+		echo "  [2/6] Copying Cilium debug..."; \
+		kubectl cp "$(CILIUM_BUILD_DIR)/cilium-dbg/cilium-dbg" ${NAMESPACE}/$${loader_pod}:"${dst}"; \
+		echo "  [3/6] Copying Cilium CNI files"; \
+		kubectl cp "$(CILIUM_BUILD_DIR)/plugins/cilium-cni/cilium-cni" ${NAMESPACE}/$${loader_pod}:"/opt/cni/bin/"; \
+		echo "  [4/6] Copying Cilium agent"; \
+		kubectl cp "$(CILIUM_BUILD_DIR)/daemon/cilium-agent" ${NAMESPACE}/$${loader_pod}:"${dst}"; \
+		echo "  [5/6] Copying hubble"; \
+		kubectl cp "$(CILIUM_BUILD_DIR)/hubble/hubble" ${NAMESPACE}/$${loader_pod}:"${dst}"; \
+		echo "  [6/6] Copying bugtool"; \
+		kubectl cp "$(CILIUM_BUILD_DIR)/bugtool/cilium-bugtool" ${NAMESPACE}/$${loader_pod}:"${dst}"; \
+	done; \
+	echo "🧹 Deleting pods..."; \
+	kubectl delete pods -n kube-system -l k8s-app=cilium --force; \
+
+.PHONY: minikube-install-cilium
+minikube-install-cilium:
+	@echo "🔄 INSTALL cilium"
+	helm install cilium $(ROOT_DIR)/install/kubernetes/cilium --namespace kube-system \
+		--set operator.replicas=1 \
+		--values $(ROOT_DIR)/minikube/minikube-fast.yaml
+
+.PHONY: minikube-delete
+minikube-delete:
+	minikube delete --all

@@ -1,0 +1,30 @@
+##############################
+# Loader agent to copy files on each node
+##############################
+apiVersion: v1
+kind: Pod
+metadata:
+  name: loader-agent-static
+  labels:    
+    app: loader-agent-static
+spec:
+  hostNetwork: true
+  containers:
+  - name: loader-agent-static
+    image: ubuntu:latest
+    imagePullPolicy: IfNotPresent
+    command: ["sh","-c","sleep infinity"]
+    volumeMounts:
+    - name: cilium-folder
+      mountPath: /cilium-binaries
+    - name: cni-folder
+      mountPath: /opt/cni/bin
+  volumes:
+  - hostPath:
+      path: /cilium-binaries
+      type: DirectoryOrCreate
+    name: cilium-folder
+  - hostPath:
+      path: /opt/cni/bin/
+      type: DirectoryOrCreate
+    name: cni-folder
