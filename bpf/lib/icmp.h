@@ -3,6 +3,8 @@
 
 #pragma once
 
+#ifdef ENABLE_IPV4
+
 #include <linux/icmp.h>
 #include <linux/icmpv6.h>
 
@@ -12,7 +14,6 @@
 #include "dbg.h"
 #include "eth.h"
 #include "overloadable.h"
-#ifdef ENABLE_IPV4
 
 #define ICMP_PACKET_MAX_SAMPLE_SIZE 64
 
