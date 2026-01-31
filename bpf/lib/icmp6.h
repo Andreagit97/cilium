@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#if !defined(__LIB_ICMP6__) && defined(ENABLE_IPV6)
-#define __LIB_ICMP6__
+#pragma once
+
+#ifdef ENABLE_IPV6
 
 #include <linux/icmpv6.h>
 #include <linux/in.h>
