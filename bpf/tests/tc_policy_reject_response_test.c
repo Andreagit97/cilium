@@ -7,6 +7,7 @@
 
 /* Enable code paths under test */
 #define ENABLE_IPV4
+#define ENABLE_IPV6
 #include <bpf/config/node.h>
 ASSIGN_CONFIG(bool, policy_deny_response_enabled, true)
 
@@ -14,6 +15,7 @@ ASSIGN_CONFIG(bool, policy_deny_response_enabled, true)
 #include "lib/endpoint.h"
 #include "lib/ipcache.h"
 #include "lib/policy.h"
+#include "lib/icmp.h"
 
 #define CLIENT_IP v4_pod_one
 #define TARGET_IP v4_ext_one
@@ -111,4 +113,74 @@ int policy_reject_response_check(const struct __ctx_buff *ctx)
 		test_fatal("expected ICMP_PKT_FILTERED, got code %d", icmp->code);
 
 	test_finish();
+}
+
+////////////////////////////
+// IPv6
+////////////////////////////
+
+#define CLIENT_IPv6 v6_pod_one
+#define TARGET_IPv6 v6_pod_two
+
+PKTGEN("tc", "policy_reject_response_v6")
+int policy_reject_response_v6_pktgen(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+	struct tcphdr *l4;
+	void *data;
+
+	/* Init packet builder */
+	pktgen__init(&builder, ctx);
+
+	l4 = pktgen__push_ipv6_tcp_packet(&builder,
+					  (__u8 *)mac_one, (__u8 *)mac_two,
+					  (__u8 *)CLIENT_IPv6,
+					  (__u8 *)TARGET_IPv6,
+					  tcp_src_one, tcp_dst_one);
+	if (!l4)
+		return TEST_ERROR;
+
+	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
+	if (!data)
+		return TEST_ERROR;
+
+	/* Calc lengths, set protocol fields and calc checksums */
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+SETUP("tc", "policy_reject_response_v6")
+int policy_reject_response_v6_setup(struct __ctx_buff *ctx)
+{
+	/* Add endpoint for source */
+	endpoint_v6_add_entry((union v6addr *)CLIENT_IPv6, 0, 0, 0, 0, NULL, NULL);
+
+	/* Add ipcache entries */
+	ipcache_v6_add_entry((union v6addr *)CLIENT_IPv6, 0, 112233, 0, 0);
+	ipcache_v6_add_entry((union v6addr *)TARGET_IPv6, 0, 445566, 0, 0);
+
+	/* Add policy that denies egress to target */
+	policy_add_egress_deny_all_entry();
+
+	return pod_send_packet(ctx);
+}
+
+CHECK("tc", "policy_reject_response_v6")
+int policy_reject_response_v6_check(const struct __ctx_buff *ctx)
+{
+	// we should have a redirect of the packet on the same interface.
+	struct validate_icmpv6_reply_args args = {
+		.ctx = ctx,
+		.src_mac = (__u8 *)mac_two,
+		.dst_mac = (__u8 *)mac_one,
+		.src_ip = (__u8 *)TARGET_IPv6,
+		.dst_ip = (__u8 *)CLIENT_IPv6,
+		.icmp_type = ICMPV6_DEST_UNREACH,
+		.icmp_code = ICMPV6_ADM_PROHIBITED,
+		.checksum = 0x9e17,
+		.dst_idx = 1, 
+		.retval = TC_ACT_REDIRECT,
+	};
+	return validate_icmpv6_reply(&args);
 }
