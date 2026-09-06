@@ -1052,6 +1052,7 @@ func initEnv(logger *slog.Logger, vp *viper.Viper) {
 		logging.Fatal(logger, "Option "+option.EnableRemoteNodeMasquerade+" requires BPF masquerade to be enabled ("+option.EnableBPFMasquerade+")")
 	}
 
+	// ask!: IMO the check here is wrong, we should enable auto direct routing only if native routing is enabled. (here we are accepting also hybrid routing)
 	if !option.Config.RequiresNativeRouting() && option.Config.EnableAutoDirectRouting {
 		logging.Fatal(logger, fmt.Sprintf("%s requires native or hybrid routing mode.", option.EnableAutoDirectRoutingName))
 	}

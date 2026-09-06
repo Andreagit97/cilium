@@ -146,8 +146,6 @@ func (m *DesiredRouteManager) UpsertRoute(route DesiredRoute) error {
 	// By default, any new route we add is not selected and does not have to be reconciled.
 	// The [selectRoutes] method will select the best route for each prefix+table.
 	route.selected = false
-	route.SetStatus(reconciler.StatusDone())
-
 	if _, _, err := m.tbl.Insert(txn, &route); err != nil {
 		return err
 	}
@@ -168,6 +166,7 @@ func (m *DesiredRouteManager) UpsertRouteWait(route DesiredRoute) error {
 	return m.waitForReconciliation(route.GetFullKey())
 }
 
+// ask!: this method is not used...
 func (m *DesiredRouteManager) DeleteRoute(route DesiredRoute) error {
 	txn := m.db.WriteTxn(m.tbl)
 	defer txn.Abort()
@@ -184,6 +183,41 @@ func (m *DesiredRouteManager) DeleteRoute(route DesiredRoute) error {
 		return err
 	}
 
+	txn.Commit()
+	return nil
+}
+
+// ReplaceRoutes atomically replaces all routes belonging to owner.
+func (m *DesiredRouteManager) ReplaceOwnerRoutes(owner *RouteOwner, newRoutes map[DesiredRouteKey]DesiredRoute) error {
+	// todo!: revisit this method, not sure this is the correct way to do the thing.
+	if owner == nil {
+		return fmt.Errorf("owner cannot be nil")
+	}
+
+	txn := m.db.WriteTxn(m.tbl)
+	defer txn.Abort()
+
+	for r := range m.tbl.Prefix(txn, DesiredRouteIndex.Query(DesiredRouteKey{Owner: owner})) {
+		if _, exists := newRoutes[r.GetFullKey()]; exists {
+			r.selected = true
+			if _, _, err := m.tbl.Insert(txn, r); err != nil {
+				return err
+			}
+
+			delete(newRoutes, r.GetFullKey())
+			continue
+		}
+		if _, _, err := m.tbl.Delete(txn, r); err != nil {
+			return err
+		}
+	}
+
+	for _, r := range newRoutes {
+		r.selected = true
+		if _, _, err := m.tbl.Insert(txn, &r); err != nil {
+			return err
+		}
+	}
 	txn.Commit()
 	return nil
 }

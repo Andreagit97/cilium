@@ -1963,11 +1963,13 @@ func (c *DaemonConfig) TunnelingEnabled() bool {
 	// tunneling because, in unit tests, RoutingMode is usually not set and we
 	// would like for TunnelingEnabled to default to the actual default
 	// (tunneling is enabled) in that case.
+	// ask!: this means that in hybrid mode the ADNR is disabled...
 	return c.RoutingMode != RoutingModeNative
 }
 
 // RequiresNativeRouting returns true if the agent needs to use native routing to implement some features.
 func (c *DaemonConfig) RequiresNativeRouting() bool {
+	// ask!: this is not true, in hybrid mode ADNR never runs.
 	return c.RoutingMode == RoutingModeNative || c.RoutingMode == RoutingModeHybrid
 }
 
