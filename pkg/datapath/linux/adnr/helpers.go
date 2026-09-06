@@ -27,20 +27,20 @@ func getOwnerName(nodeName string) string {
 	return adnrOwnerPrefix + nodeName
 }
 
-func (h *Handler) deleteNodeRoutes(nodeName string) error {
-	owner, err := h.routeManager.GetOwner(getOwnerName(nodeName))
-	if errors.Is(err, routeReconciler.ErrOwnerDoesNotExist) {
-		return nil
-	}
+func deleteNodeRoutes(rm *routeReconciler.DesiredRouteManager, nodeName string) error {
+	owner, err := rm.GetOwner(getOwnerName(nodeName))
 	if err != nil {
+		if errors.Is(err, routeReconciler.ErrOwnerDoesNotExist) {
+			return nil
+		}
 		return fmt.Errorf("getting route owner for node %s: %w", nodeName, err)
 	}
-	return h.routeManager.RemoveOwner(owner)
+	return rm.RemoveOwner(owner)
 }
 
 func (h *Handler) getNodeRoutes(nodeName string, nodeIP net.IP, podCIDRs []netip.Prefix) ([]routeReconciler.DesiredRoute, error) {
 	// We check if the remote node is reachable on the same L2 Network
-	index, err := getRouteIndex(nodeIP)
+	index, err := h.getRouteIndex(nodeIP)
 	if err != nil {
 		if errors.Is(errNodeNotOnSameL2, err) &&
 			h.cfg.DirectRoutingSkipUnreachable {
@@ -50,10 +50,15 @@ func (h *Handler) getNodeRoutes(nodeName string, nodeIP net.IP, podCIDRs []netip
 			)
 			return nil, nil
 		}
+		// h.logger.Warn("falling here for node",
+		// 	"ip", nodeIP.String(),
+		// 	"nodeName", nodeName,
+		// 	"skipping", h.cfg.DirectRoutingSkipUnreachable,
+		// )
 		return nil, err
 	}
 
-	// We know get the device associated with the index we obtained from the route.
+	// We now get the device associated with the index we obtained from the route.
 	dev, err := getDevice(index, h.devices, h.db)
 	if err != nil {
 		return nil, fmt.Errorf("getting device for node %s: %w", nodeName, err)
@@ -75,8 +80,7 @@ func (h *Handler) getNodeRoutes(nodeName string, nodeIP net.IP, podCIDRs []netip
 }
 
 func (h *Handler) replaceNodeRoutes(nodeName string, routes []routeReconciler.DesiredRoute) error {
-	ownerName := getOwnerName(nodeName)
-	owner, err := h.routeManager.GetOrRegisterOwner(ownerName)
+	owner, err := h.routeManager.GetOrRegisterOwner(getOwnerName(nodeName))
 	if err != nil {
 		return fmt.Errorf("registering route owner for node %s: %w", nodeName, err)
 	}
@@ -119,16 +123,28 @@ func (h *Handler) processNodeChange(node *node.Node, isDeleted bool) error {
 		// ask!: check if we really need this check
 		// here we always use false because if we reach this point encapsulation should be disabled.
 		// If we have an override for the encapsulation we skip the node
-		return h.deleteNodeRoutes(node.Fullname())
+		return deleteNodeRoutes(h.routeManager, node.Fullname())
 	}
 
 	if isDeleted {
-		return h.deleteNodeRoutes(node.Fullname())
+		return deleteNodeRoutes(h.routeManager, node.Fullname())
 	}
 	return h.updateNodeRoutes(node)
 }
 
 func (h *Handler) run(ctx context.Context, health cell.Health) error {
+	// Wait for the nodes table to be initialized before processing changes.
+	// We do this before the for loop so that after the first batch of changes
+	// we are sure, we can finalize the initializer.
+	// the route reconciler will delete old routes for us after an agent restart.
+	finalized := false
+	_, initialized := h.nodes.Initialized(h.db.ReadTxn())
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-initialized:
+	}
+
 	wtxn := h.db.WriteTxn(h.nodes)
 	changes, err := h.nodes.Changes(wtxn)
 	if err != nil {
@@ -136,11 +152,11 @@ func (h *Handler) run(ctx context.Context, health cell.Health) error {
 		return fmt.Errorf("subscribing to node changes: %w", err)
 	}
 	wtxn.Commit()
+	defer changes.Close()
 
 	for {
 		rtxn := h.db.ReadTxn()
 		// todo!: is there a way to retry for a node, in case of error?
-		// todo!: if a node goes down or is deleted while the agent is restarting we don't delete its routes properly.
 		batch, watch := changes.Next(rtxn)
 
 		var errs error
@@ -148,6 +164,11 @@ func (h *Handler) run(ctx context.Context, health cell.Health) error {
 			if err := h.processNodeChange(change.Object, change.Deleted); err != nil {
 				errs = fmt.Errorf("processing node change for %s: %w", change.Object.Fullname(), err)
 			}
+		}
+
+		if !finalized {
+			h.routeManager.FinalizeInitializer(h.initializer)
+			finalized = true
 		}
 
 		if errs != nil {
@@ -164,8 +185,6 @@ func (h *Handler) run(ctx context.Context, health cell.Health) error {
 	}
 }
 
-// todo!: we can share the helper with the endpoint route logic
-// https://github.com/cilium/cilium/blob/e31fcdb45424acf822950591e4bc39092492c312/pkg/datapath/loader/endpoint.go#L315
 func getDevice(index int, devices statedb.Table[*tables.Device], db *statedb.DB) (*tables.Device, error) {
 	const devTableWaitTimeout = 5 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), devTableWaitTimeout)

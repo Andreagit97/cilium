@@ -146,7 +146,7 @@ var Cell = cell.Module(
 	// Provides the Linux node reconciler, its policy hooks, and node ID API.
 	cell.Provide(linuxdatapath.NewNodePolicy, linuxdatapath.NewNodeHandler),
 	cell.Invoke(linuxdatapath.RegisterNodeReconciler),
-	cell.Invoke(adnr.RegisterHandler),
+	adnr.Cell,
 	cell.Provide(node.NewNodeIDApiHandler),
 
 	// Provides Active Connection Tracking metrics based on counts of
