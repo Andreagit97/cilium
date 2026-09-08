@@ -540,108 +540,6 @@ func installDirectRoute(log *slog.Logger, prefix netip.Prefix, nodeIP net.IP, sk
 	return
 }
 
-func (n *linuxNodeHandler) updateDirectRoutes(oldCIDRs, newCIDRs []netip.Prefix, oldIP, newIP net.IP, firstAddition, directRouteEnabled bool, directRouteSkipUnreachable bool) error {
-	if !directRouteEnabled {
-		// When the protocol family is disabled, the initial node addition will
-		// trigger a deletion to clean up leftover entries. The deletion happens
-		// in quiet mode as we don't know whether it exists or not
-		if firstAddition {
-			return n.deleteAllDirectRoutes(newCIDRs, newIP)
-		}
-		return nil
-	}
-
-	var addedCIDRs, removedCIDRs []netip.Prefix
-	if oldIP.Equal(newIP) {
-		oldSet, newSet := sets.New(oldCIDRs...), sets.New(newCIDRs...)
-		addedCIDRs = newSet.Difference(oldSet).UnsortedList()
-		removedCIDRs = oldSet.Difference(newSet).UnsortedList()
-	} else {
-		// if the node IP changed, then we need to update all routes with the
-		// new IP, but we also want to remove any of the old routes with the
-		// old IP, in case the output device changed
-		addedCIDRs, removedCIDRs = newCIDRs, oldCIDRs
-	}
-
-	n.log.Debug("Updating direct route",
-		logfields.NewIP, newIP,
-		logfields.OldIP, oldIP,
-		logfields.AddedCIDRs, addedCIDRs,
-		logfields.RemovedCIDRs, removedCIDRs,
-	)
-
-	for _, prefix := range addedCIDRs {
-		if routeSpec, err := installDirectRoute(n.log, prefix, newIP, directRouteSkipUnreachable); err != nil {
-			n.log.Warn("Unable to install direct node route",
-				logfields.Route, routeSpec,
-				logfields.Error, err,
-			)
-			// In the current implementation, this often fails because updates are tried for both ip families
-			// regardless if the Node has either ip types.
-			// At the time of this change we are only interested in bubbling up errors without affecting execution flow.
-			// Thus we are ignoring the error here for now.
-			//
-			// TODO(Tom): In the future we will want to avoid attempting to do the update if we know it will fail.
-			if newIP == nil && errors.Is(err, unix.ERANGE) {
-				return nil
-			}
-			return err
-		}
-	}
-	if err := n.deleteAllDirectRoutes(removedCIDRs, oldIP); err != nil {
-		return fmt.Errorf("failed to delete all direct routes: %w", err)
-	}
-
-	return nil
-}
-
-func (n *linuxNodeHandler) deleteAllDirectRoutes(prefixes []netip.Prefix, nodeIP net.IP) error {
-	var errs error
-	for _, prefix := range prefixes {
-		if err := n.deleteDirectRoute(prefix, nodeIP); err != nil {
-			errs = errors.Join(errs, err)
-		}
-	}
-	return errs
-}
-
-func (n *linuxNodeHandler) deleteDirectRoute(prefix netip.Prefix, nodeIP net.IP) error {
-	if !prefix.IsValid() {
-		return nil
-	}
-
-	family := netlink.FAMILY_V4
-	familyStr := "ip4"
-	if !prefix.Addr().Is4() {
-		family = netlink.FAMILY_V6
-		familyStr = "ip6"
-	}
-
-	filter := &netlink.Route{
-		Dst:      netipx.PrefixIPNet(prefix),
-		Gw:       nodeIP,
-		Protocol: linux_defaults.RTProto,
-	}
-
-	routes, err := safenetlink.RouteListFiltered(family, filter, netlink.RT_FILTER_DST|netlink.RT_FILTER_GW)
-	if err != nil {
-		n.log.Error("Unable to list direct routes", logfields.Error, err)
-		return fmt.Errorf("failed to list direct routes %s: %w", familyStr, err)
-	}
-
-	var errs error
-	for _, rt := range routes {
-		if err := netlink.RouteDel(&rt); err != nil {
-			n.log.Warn("Unable to delete direct node route",
-				logfields.CIDR, rt,
-				logfields.Error, err,
-			)
-			errs = errors.Join(errs, fmt.Errorf("failed to delete direct route %q: %w", rt.String(), err))
-		}
-	}
-	return errs
-}
-
 // createNodeRouteSpec creates a route spec that points the specified prefix to the host
 // device via the router IP. The route is configured with a computed MTU for non-local
 // nodes (i.e isLocalNode is set to false).
@@ -783,9 +681,6 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		oldAllIP4AllocCidrs, oldAllIP6AllocCidrs []netip.Prefix
 		newAllIP4AllocCidrs                      = newNode.GetIPv4AllocCIDRs()
 		newAllIP6AllocCidrs                      = newNode.GetIPv6AllocCIDRs()
-		oldIP4, oldIP6                           net.IP
-		newIP4                                   = newNode.GetNodeIP(false)
-		newIP6                                   = newNode.GetNodeIP(true)
 		isLocalNode                              = false
 	)
 	nodeID, err := n.allocateIDForNode(oldNode, newNode)
@@ -796,8 +691,6 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 	if oldNode != nil {
 		oldAllIP4AllocCidrs = oldNode.GetIPv4AllocCIDRs()
 		oldAllIP6AllocCidrs = oldNode.GetIPv6AllocCIDRs()
-		oldIP4 = oldNode.GetNodeIP(false)
-		oldIP6 = oldNode.GetNodeIP(true)
 
 		n.diffAndUnmapNodeIPs(oldNode.IPAddresses, newNode.IPAddresses)
 	}
@@ -825,16 +718,6 @@ func (n *linuxNodeHandler) nodeUpdate(oldNode, newNode *nodeTypes.Node, firstAdd
 		}
 		if firstAddition && n.nodeConfig.EnableIPSec {
 			n.registerIpsecMetricOnce()
-		}
-		return errs
-	}
-
-	if n.nodeConfig.EnableAutoDirectRouting && !n.enableEncapsulation(newNode) {
-		if err := n.updateDirectRoutes(oldAllIP4AllocCidrs, newAllIP4AllocCidrs, oldIP4, newIP4, firstAddition, n.nodeConfig.EnableIPv4, n.nodeConfig.DirectRoutingSkipUnreachable); err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to enable direct routes for ipv4: %w", err))
-		}
-		if err := n.updateDirectRoutes(oldAllIP6AllocCidrs, newAllIP6AllocCidrs, oldIP6, newIP6, firstAddition, n.nodeConfig.EnableIPv6, n.nodeConfig.DirectRoutingSkipUnreachable); err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to enable direct routes for ipv6: %w", err))
 		}
 		return errs
 	}
@@ -874,29 +757,10 @@ func (n *linuxNodeHandler) nodeDelete(oldNode *nodeTypes.Node) error {
 		return nil
 	}
 
-	oldIP4 := oldNode.GetNodeIP(false)
-	oldIP6 := oldNode.GetNodeIP(true)
-
 	oldAllIP4AllocCidrs := oldNode.GetIPv4AllocCIDRs()
 	oldAllIP6AllocCidrs := oldNode.GetIPv6AllocCIDRs()
 
 	var errs error
-	if n.nodeConfig.EnableAutoDirectRouting && !n.enableEncapsulation(oldNode) {
-		if n.nodeConfig.EnableIPv4 {
-			for _, prefix := range oldAllIP4AllocCidrs {
-				if err := n.deleteDirectRoute(prefix, oldIP4); err != nil {
-					errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes: %w", err))
-				}
-			}
-		}
-		if n.nodeConfig.EnableIPv6 {
-			for _, prefix := range oldAllIP6AllocCidrs {
-				if err := n.deleteDirectRoute(prefix, oldIP6); err != nil {
-					errs = errors.Join(errs, fmt.Errorf("failed to remove old direct routing: deleting old routes: %w", err))
-				}
-			}
-		}
-	}
 
 	if n.enableEncapsulation(oldNode) {
 		if n.nodeConfig.EnableIPv4 {

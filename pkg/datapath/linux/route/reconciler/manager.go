@@ -168,6 +168,7 @@ func (m *DesiredRouteManager) UpsertRouteWait(route DesiredRoute) error {
 	return m.waitForReconciliation(route.GetFullKey())
 }
 
+// ask!: this method is not used...
 func (m *DesiredRouteManager) DeleteRoute(route DesiredRoute) error {
 	txn := m.db.WriteTxn(m.tbl)
 	defer txn.Abort()
@@ -184,6 +185,47 @@ func (m *DesiredRouteManager) DeleteRoute(route DesiredRoute) error {
 		return err
 	}
 
+	txn.Commit()
+	return nil
+}
+
+// ReplaceRoutes atomically replaces all routes belonging to owner.
+func (m *DesiredRouteManager) ReplaceOwnerRoutes(owner *RouteOwner, newRoutes []DesiredRoute) error {
+	if owner == nil {
+		return fmt.Errorf("owner cannot be nil")
+	}
+
+	routesMap := make(map[DesiredRouteKey]*DesiredRoute, len(newRoutes))
+	for _, route := range newRoutes {
+		// For ADNR all routes are always selected because we don't have conflicting routes on pod CIDRs.
+		route.selected = true
+		routesMap[route.GetFullKey()] = route.SetStatus(reconciler.StatusPending())
+	}
+
+	txn := m.db.WriteTxn(m.tbl)
+	defer txn.Abort()
+
+	// we first check what we already have in the table and we update/remove routes
+	for r := range m.tbl.Prefix(txn, DesiredRouteIndex.Query(DesiredRouteKey{Owner: owner})) {
+		if newRoute, exists := routesMap[r.GetFullKey()]; exists {
+			if _, _, err := m.tbl.Insert(txn, newRoute); err != nil {
+				return err
+			}
+
+			delete(routesMap, r.GetFullKey())
+			continue
+		}
+		if _, _, err := m.tbl.Delete(txn, r); err != nil {
+			return err
+		}
+	}
+
+	// If any we add the new ones
+	for _, r := range routesMap {
+		if _, _, err := m.tbl.Insert(txn, r); err != nil {
+			return err
+		}
+	}
 	txn.Commit()
 	return nil
 }
