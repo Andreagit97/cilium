@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/cilium/statedb"
@@ -184,6 +185,58 @@ func (m *DesiredRouteManager) DeleteRoute(route DesiredRoute) error {
 		return err
 	}
 
+	txn.Commit()
+	return nil
+}
+
+// ReplaceRoutes atomically replaces all routes belonging to owner.
+// At the moment, the ADNR (Auto-direct-node-routes) handler is the only
+// consumer of this method so the logic always selects all routes for a given
+// owner because there are no conflicting routes on pod CIDRs.
+func (m *DesiredRouteManager) ReplaceOwnerRoutes(owner *RouteOwner, newRoutes []DesiredRoute) error {
+	if owner == nil {
+		return fmt.Errorf("owner cannot be nil")
+	}
+
+	routesMap := make(map[DesiredRouteKey]*DesiredRoute, len(newRoutes))
+	for _, route := range newRoutes {
+		// For ADNR all routes are always selected because we don't have conflicting routes on pod CIDRs.
+		route.selected = true
+		routesMap[route.GetFullKey()] = route.WithStatus(reconciler.StatusPending())
+	}
+
+	txn := m.db.WriteTxn(m.tbl)
+	defer txn.Abort()
+
+	// we first check what we already have in the table and we update/remove routes
+	for r := range m.tbl.Prefix(txn, DesiredRouteIndex.Query(DesiredRouteKey{Owner: owner})) {
+		routeKey := r.GetFullKey()
+		if newRoute, exists := routesMap[routeKey]; exists {
+			// Preserve routes whose desired state has not changed.
+			// The reconciliation status is managed separately and must not affect the comparison.
+			if reflect.DeepEqual(r, newRoute.WithStatus(r.GetStatus())) {
+				delete(routesMap, routeKey)
+				continue
+			}
+
+			if _, _, err := m.tbl.Insert(txn, newRoute); err != nil {
+				return err
+			}
+
+			delete(routesMap, routeKey)
+			continue
+		}
+		if _, _, err := m.tbl.Delete(txn, r); err != nil {
+			return err
+		}
+	}
+
+	// If any we add the new ones
+	for _, r := range routesMap {
+		if _, _, err := m.tbl.Insert(txn, r); err != nil {
+			return err
+		}
+	}
 	txn.Commit()
 	return nil
 }
