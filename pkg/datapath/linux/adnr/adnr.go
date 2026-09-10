@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
+	"slices"
 
 	"github.com/cilium/hive/cell"
+	"github.com/cilium/statedb"
 
 	routeReconciler "github.com/cilium/cilium/pkg/datapath/linux/route/reconciler"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -84,6 +87,59 @@ func (h *Handler) getNodeRoutes(nodeName string, nodeIP net.IP, podCIDRs []netip
 	return routes, nil
 }
 
+func sameRoute(a, b *routeReconciler.DesiredRoute) bool {
+	// we compare only exported fields of the route
+	// and we exclude the status.
+	return a.AdminDistance == b.AdminDistance &&
+		a.Nexthop == b.Nexthop &&
+		a.Src == b.Src &&
+		reflect.DeepEqual(a.Device, b.Device) &&
+		reflect.DeepEqual(a.MultiPath, b.MultiPath) &&
+		a.MTU == b.MTU &&
+		a.Scope == b.Scope &&
+		a.Type == b.Type
+}
+
+func (h *Handler) replaceOwnerRoutes(owner *routeReconciler.RouteOwner, newRoutes []routeReconciler.DesiredRoute) error {
+	desiredRoutes := make(map[routeReconciler.DesiredRouteKey]routeReconciler.DesiredRoute, len(newRoutes))
+	for _, route := range newRoutes {
+		desiredRoutes[route.GetFullKey()] = route
+	}
+
+	currentRoutes := slices.Collect(statedb.ToSeq(h.desiredRoutes.Prefix(
+		h.db.ReadTxn(),
+		routeReconciler.DesiredRouteIndex.Query(routeReconciler.DesiredRouteKey{Owner: owner}),
+	)))
+	for _, current := range currentRoutes {
+		desired, exists := desiredRoutes[current.GetFullKey()]
+		if !exists {
+			// this is an old route we just delete it
+			if err := h.routeManager.DeleteRoute(*current); err != nil {
+				return err
+			}
+			continue
+		}
+		// We have an existing route that matches the desired route key.
+		// Check if we need an update or if it is the same.
+		// In any case we delete it from the desired routes map so that
+		// we don't add it again.
+		delete(desiredRoutes, current.GetFullKey())
+		if sameRoute(current, &desired) {
+			continue
+		}
+		if err := h.routeManager.UpsertRoute(desired); err != nil {
+			return err
+		}
+	}
+
+	for _, route := range desiredRoutes {
+		if err := h.routeManager.UpsertRoute(route); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (h *Handler) replaceNodeRoutes(n *node.Node) error {
 	routes := []routeReconciler.DesiredRoute{}
 	nodeName := n.Fullname()
@@ -105,7 +161,7 @@ func (h *Handler) replaceNodeRoutes(n *node.Node) error {
 	if err != nil {
 		return fmt.Errorf("registering route owner for node %s: %w", nodeName, err)
 	}
-	return h.routeManager.ReplaceOwnerRoutes(owner, routes)
+	return h.replaceOwnerRoutes(owner, routes)
 }
 
 func (h *Handler) processNodeChange(node *node.Node, isDeleted bool) error {

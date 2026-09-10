@@ -136,6 +136,143 @@ func TestDeleteNodeRoutes(t *testing.T) {
 	require.NoError(t, deleteNodeRoutes(rm, "not-exist"))
 }
 
+func TestReplaceOwnerRoutes(t *testing.T) {
+	baseIPv4 := netip.MustParseAddr("192.0.1.2")
+	baseIPv6 := netip.MustParseAddr("fd00::2")
+	baseIPv4Prefix := netip.MustParsePrefix("10.10.2.0/24")
+	baseIPv6Prefix := netip.MustParsePrefix("fd00:10:10:2::/64")
+	baseDeviceIndex := 10
+
+	newIPv4 := netip.MustParseAddr("192.0.1.3")
+	newIPv6 := netip.MustParseAddr("fd00::3")
+	newIPv4Prefix := netip.MustParsePrefix("10.10.3.0/24")
+	newIPv6Prefix := netip.MustParsePrefix("fd00:10:10:3::/64")
+	newDeviceIndex := 11
+
+	newRoute := func(prefix netip.Prefix, nexthop netip.Addr, deviceIndex int) routeReconciler.DesiredRoute {
+		return routeReconciler.DesiredRoute{
+			Table:         routeReconciler.TableMain,
+			Prefix:        prefix,
+			AdminDistance: routeReconciler.AdminDistanceDefault,
+			Nexthop:       nexthop,
+			Device:        &tables.Device{Index: deviceIndex},
+		}
+	}
+
+	baseRoutes := []routeReconciler.DesiredRoute{
+		newRoute(baseIPv4Prefix, baseIPv4, baseDeviceIndex),
+		newRoute(baseIPv6Prefix, baseIPv6, baseDeviceIndex),
+	}
+	tests := []struct {
+		name     string
+		initial  []routeReconciler.DesiredRoute
+		replaced []routeReconciler.DesiredRoute
+	}{
+		{
+			name:     "adds_routes",
+			initial:  nil,
+			replaced: baseRoutes,
+		},
+		{
+			name:     "removes_routes",
+			initial:  baseRoutes,
+			replaced: nil,
+		},
+		{
+			name:    "changes_prefix",
+			initial: baseRoutes,
+			replaced: []routeReconciler.DesiredRoute{
+				newRoute(newIPv4Prefix, newIPv4, baseDeviceIndex),
+				newRoute(newIPv6Prefix, newIPv6, baseDeviceIndex),
+			},
+		},
+		{
+			name:    "changes_nexthop_and_device",
+			initial: baseRoutes,
+			replaced: []routeReconciler.DesiredRoute{
+				newRoute(baseIPv4Prefix, newIPv4, newDeviceIndex),
+				newRoute(baseIPv6Prefix, newIPv6, newDeviceIndex),
+			},
+		},
+		{
+			name:    "add_new_route",
+			initial: baseRoutes,
+			replaced: append([]routeReconciler.DesiredRoute{
+				newRoute(newIPv4Prefix, newIPv4, newDeviceIndex),
+			}, baseRoutes...),
+		},
+		{
+			name:    "remove_stale_route",
+			initial: baseRoutes,
+			replaced: []routeReconciler.DesiredRoute{
+				newRoute(baseIPv4Prefix, baseIPv4, baseDeviceIndex),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			db, desiredRoutes, rm := newTestDesiredRouteManagerSetup(t)
+			owner, err := rm.RegisterOwner(getOwnerName("node1"))
+			require.NoError(t, err)
+			handler := &Handler{db: db, desiredRoutes: desiredRoutes, routeManager: rm}
+
+			for i := range tt.initial {
+				tt.initial[i].Owner = owner
+			}
+			for i := range tt.replaced {
+				tt.replaced[i].Owner = owner
+			}
+
+			require.NoError(t, handler.replaceOwnerRoutes(owner, tt.initial))
+			require.Len(t, slices.Collect(statedb.ToSeq(desiredRoutes.All(db.ReadTxn()))), len(tt.initial))
+			require.NoError(t, handler.replaceOwnerRoutes(owner, tt.replaced))
+
+			routes := slices.Collect(statedb.ToSeq(desiredRoutes.All(db.ReadTxn())))
+			require.Len(t, routes, len(tt.replaced))
+			for _, expected := range tt.replaced {
+				actual, _, found := desiredRoutes.Get(db.ReadTxn(), routeReconciler.DesiredRouteIndex.Query(expected.GetFullKey()))
+				require.True(t, found)
+				assertRoute(t, actual, expected.Prefix.String(), owner, expected.Nexthop.String(), expected.Device)
+			}
+		})
+	}
+}
+
+func TestReplaceOwnerRoutesDoesNotInsertUnchangedRoute(t *testing.T) {
+	db, desiredRoutes, rm := newTestDesiredRouteManagerSetup(t)
+	owner, err := rm.RegisterOwner(getOwnerName("node1"))
+	require.NoError(t, err)
+	handler := &Handler{db: db, desiredRoutes: desiredRoutes, routeManager: rm}
+	route := routeReconciler.DesiredRoute{
+		Owner:         owner,
+		Table:         routeReconciler.TableMain,
+		Prefix:        netip.MustParsePrefix("10.10.2.0/24"),
+		AdminDistance: routeReconciler.AdminDistanceDefault,
+		Nexthop:       netip.MustParseAddr("192.0.1.2"),
+		Device:        &tables.Device{Index: 10},
+	}
+
+	// We first insert the route
+	require.NoError(t, handler.replaceOwnerRoutes(owner, []routeReconciler.DesiredRoute{route}))
+	before, beforeRevision, found := desiredRoutes.Get(
+		db.ReadTxn(), routeReconciler.DesiredRouteIndex.Query(route.GetFullKey()),
+	)
+	require.True(t, found)
+
+	// we now try to replace a new identical route and expect no changes
+	require.NoError(t, handler.replaceOwnerRoutes(owner, []routeReconciler.DesiredRoute{route}))
+	after, afterRevision, found := desiredRoutes.Get(
+		db.ReadTxn(), routeReconciler.DesiredRouteIndex.Query(route.GetFullKey()),
+	)
+	// Same object, same revision, same status.
+	require.True(t, found)
+	require.Same(t, before, after)
+	require.Equal(t, beforeRevision, afterRevision)
+	require.Equal(t, before.GetStatus(), after.GetStatus())
+}
+
 func TestADRNFullFlow(t *testing.T) {
 	db, desiredRoutes, rm := newTestDesiredRouteManagerSetup(t)
 
@@ -207,11 +344,12 @@ func TestADRNFullFlow(t *testing.T) {
 	/////////////////////
 
 	handler := &Handler{
-		db:           db,
-		nodes:        nodes.ToTable(),
-		devices:      devices.ToTable(),
-		routeManager: rm,
-		nodePolicy:   &linux.NodePolicy{},
+		db:            db,
+		nodes:         nodes.ToTable(),
+		devices:       devices.ToTable(),
+		desiredRoutes: desiredRoutes,
+		routeManager:  rm,
+		nodePolicy:    &linux.NodePolicy{},
 		cfg: &option.DaemonConfig{
 			EnableIPv4:                   true,
 			DirectRoutingSkipUnreachable: true,

@@ -30,14 +30,15 @@ var Cell = cell.Module(
 type Params struct {
 	cell.In
 
-	DB           *statedb.DB
-	Nodes        statedb.Table[*node.Node]
-	Devices      statedb.Table[*tables.Device]
-	RouteManager *routeReconciler.DesiredRouteManager
-	DaemonConfig *option.DaemonConfig
-	NodePolicy   *linux.NodePolicy
-	JobGroup     job.Group
-	Logger       *slog.Logger
+	DB            *statedb.DB
+	Nodes         statedb.Table[*node.Node]
+	Devices       statedb.Table[*tables.Device]
+	DesiredRoutes statedb.Table[*routeReconciler.DesiredRoute]
+	RouteManager  *routeReconciler.DesiredRouteManager
+	DaemonConfig  *option.DaemonConfig
+	NodePolicy    *linux.NodePolicy
+	JobGroup      job.Group
+	Logger        *slog.Logger
 }
 
 func RegisterHandler(params Params) {
@@ -49,6 +50,7 @@ func RegisterHandler(params Params) {
 		db:            params.DB,
 		nodes:         params.Nodes,
 		devices:       params.Devices,
+		desiredRoutes: params.DesiredRoutes,
 		routeManager:  params.RouteManager,
 		getRouteIndex: getRouteIndex,
 		nodePolicy:    params.NodePolicy,
@@ -71,6 +73,7 @@ type Handler struct {
 	db            *statedb.DB
 	nodes         statedb.Table[*node.Node]
 	devices       statedb.Table[*tables.Device]
+	desiredRoutes statedb.Table[*routeReconciler.DesiredRoute]
 	routeManager  *routeReconciler.DesiredRouteManager
 	getRouteIndex func(net.IP) (int, error)
 	nodePolicy    *linux.NodePolicy
